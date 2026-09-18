@@ -1,6 +1,5 @@
 /**
  * WebRTC Call Manager
- * Controls audio/screen media streams, call timers, caller metadata, and screen sharing.
  */
 class CallManager {
   constructor(pbxEngine) {
@@ -16,43 +15,48 @@ class CallManager {
   }
 
   async makeCall(targetExtension) {
-    const cleanTarget = targetExtension.toString().trim();
+    const cleanTarget = targetExtension ? targetExtension.toString().trim() : '';
     if (!cleanTarget) {
-      alert('Please enter a valid target extension.');
+      alert('Please enter a target extension to call.');
       return;
     }
 
-    if (!this.pbx.peer || this.pbx.peer.disconnected) {
-      alert('PBX is offline. Register your extension first.');
+    if (!this.pbx.peer || this.pbx.peer.disconnected || this.pbx.peer.destroyed) {
+      alert('PBX is offline. Please register your extension first.');
       return;
     }
 
     try {
       this._updateCallStatus(`Dialing Ext ${cleanTarget}...`, 'text-amber-400');
+      
+      // Capture local microphone stream
       this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
 
       const targetPeerId = `pbx-ext-${cleanTarget}`;
       
-      // Pass caller display name in metadata
-      this.activeCall = this.pbx.peer.call(targetPeerId, this.localStream, {
-        metadata: { callerName: this.pbx.displayName, callerExt: this.pbx.currentExtension }
-      });
+      // Pass caller identity safely serialized in metadata
+      const metadata = {
+        callerName: this.pbx.displayName,
+        callerExt: this.pbx.currentExtension
+      };
+
+      this.activeCall = this.pbx.peer.call(targetPeerId, this.localStream, { metadata });
 
       if (!this.activeCall) {
-        throw new Error('Failed to create outbound connection.');
+        throw new Error('Could not initialize outbound call session.');
       }
 
       this._setupCallEvents(this.activeCall);
     } catch (err) {
       console.error('[CallManager Error]', err);
-      alert(`Could not place call: ${err.message || 'Microphone permission denied.'}`);
+      alert(`Could not place call: ${err.message || 'Microphone access denied.'}`);
       this.endCall();
     }
   }
 
   async answerCall(incomingCall) {
     try {
-      const callerName = incomingCall.metadata?.callerName || 'Unknown';
+      const callerName = incomingCall.metadata?.callerName || 'Unknown Caller';
       this._updateCallStatus(`Connecting to ${callerName}...`, 'text-amber-400');
       
       this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -63,29 +67,28 @@ class CallManager {
       this._setupCallEvents(this.activeCall);
     } catch (err) {
       console.error('[CallManager Error]', err);
-      alert(`Failed to answer call: ${err.message || 'Microphone permission denied.'}`);
+      alert(`Failed to answer call: ${err.message || 'Microphone access denied.'}`);
       this.endCall();
     }
   }
 
   _setupCallEvents(call) {
     call.on('stream', (remoteStream) => {
-      console.log('[CallManager] Remote media stream received.');
+      console.log('[CallManager] Remote stream attached.');
       
       const audioElem = document.getElementById('remoteAudio');
       const videoElem = document.getElementById('remoteVideo');
 
-      // Detect if stream includes video (Screen Share) or audio
-      if (remoteStream.getVideoTracks().length > 0) {
-        if (videoElem) {
-          videoElem.srcObject = remoteStream;
-          videoElem.classList.remove('hidden');
-        }
-      } else {
-        if (audioElem) {
-          audioElem.srcObject = remoteStream;
-          audioElem.play().catch(e => console.error('Audio playback error:', e));
-        }
+      // Check if remote stream contains video (Screen Share)
+      const hasVideo = remoteStream.getVideoTracks().length > 0;
+
+      if (hasVideo && videoElem) {
+        videoElem.srcObject = remoteStream;
+        videoElem.classList.remove('hidden');
+        videoElem.play().catch(e => console.error('Video playback error:', e));
+      } else if (audioElem) {
+        audioElem.srcObject = remoteStream;
+        audioElem.play().catch(e => console.error('Audio playback error:', e));
       }
 
       const callerName = call.metadata?.callerName || 'Peer';
@@ -94,12 +97,13 @@ class CallManager {
     });
 
     call.on('close', () => {
+      console.log('[CallManager] Call ended by peer.');
       this.endCall();
     });
 
     call.on('error', (err) => {
-      console.error('[CallManager Session Error]', err);
-      alert(`Call Session Error: ${err.message || err}`);
+      console.error('[CallManager Call Error]', err);
+      alert(`Call Error: ${err.message || err}`);
       this.endCall();
     });
   }
@@ -112,27 +116,30 @@ class CallManager {
 
     try {
       if (!this.isSharingScreen) {
-        // Request Screen Capture
+        // Request display capture
         this.screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
         const videoTrack = this.screenStream.getVideoTracks()[0];
 
-        // Replace audio/video track sent to peer
-        const sender = this.activeCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
-        if (sender) {
-          sender.replaceTrack(videoTrack);
-        } else {
-          this.activeCall.peerConnection.addTrack(videoTrack, this.screenStream);
+        // Locate video sender or add new track to connection
+        const peerConn = this.activeCall.peerConnection;
+        if (peerConn) {
+          const sender = peerConn.getSenders().find(s => s.track && s.track.kind === 'video');
+          if (sender) {
+            sender.replaceTrack(videoTrack);
+          } else {
+            peerConn.addTrack(videoTrack, this.screenStream);
+          }
         }
 
         this.isSharingScreen = true;
         this._updateCallStatus('Sharing Screen...', 'text-indigo-400');
 
-        // Handle user stopping screen share via browser bar
+        // Handle native browser "Stop Sharing" button
         videoTrack.onended = () => {
           this.toggleScreenShare();
         };
       } else {
-        // Stop Screen Share and revert to audio track
+        // Stop screen tracks
         if (this.screenStream) {
           this.screenStream.getTracks().forEach(track => track.stop());
           this.screenStream = null;
