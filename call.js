@@ -1,19 +1,20 @@
 /**
  * WebRTC Call Manager
- * Controls media capture, active call state, stream rendering, timers, and UI indicators.
+ * Controls audio/screen media streams, call timers, caller metadata, and screen sharing.
  */
 class CallManager {
   constructor(pbxEngine) {
     this.pbx = pbxEngine;
     this.activeCall = null;
     this.localStream = null;
+    this.screenStream = null;
     this.isMuted = false;
     this.isOnHold = false;
+    this.isSharingScreen = false;
     this.timerInterval = null;
     this.callSeconds = 0;
   }
 
-  // Start an outgoing call
   async makeCall(targetExtension) {
     const cleanTarget = targetExtension.toString().trim();
     if (!cleanTarget) {
@@ -22,19 +23,23 @@ class CallManager {
     }
 
     if (!this.pbx.peer || this.pbx.peer.disconnected) {
-      alert('PBX is offline. Please register your extension first.');
+      alert('PBX is offline. Register your extension first.');
       return;
     }
 
     try {
       this._updateCallStatus(`Dialing Ext ${cleanTarget}...`, 'text-amber-400');
       this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      
+
       const targetPeerId = `pbx-ext-${cleanTarget}`;
-      this.activeCall = this.pbx.peer.call(targetPeerId, this.localStream);
+      
+      // Pass caller display name in metadata
+      this.activeCall = this.pbx.peer.call(targetPeerId, this.localStream, {
+        metadata: { callerName: this.pbx.displayName, callerExt: this.pbx.currentExtension }
+      });
 
       if (!this.activeCall) {
-        throw new Error('Failed to create outbound media connection.');
+        throw new Error('Failed to create outbound connection.');
       }
 
       this._setupCallEvents(this.activeCall);
@@ -45,10 +50,11 @@ class CallManager {
     }
   }
 
-  // Answer an incoming call
   async answerCall(incomingCall) {
     try {
-      this._updateCallStatus('Connecting call...', 'text-amber-400');
+      const callerName = incomingCall.metadata?.callerName || 'Unknown';
+      this._updateCallStatus(`Connecting to ${callerName}...`, 'text-amber-400');
+      
       this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       
       this.activeCall = incomingCall;
@@ -62,22 +68,32 @@ class CallManager {
     }
   }
 
-  // Bind WebRTC connection events
   _setupCallEvents(call) {
     call.on('stream', (remoteStream) => {
-      console.log('[CallManager] Remote audio stream received.');
-      const audioElem = document.getElementById('remoteAudio');
-      if (audioElem) {
-        audioElem.srcObject = remoteStream;
-        audioElem.play().catch(e => console.error('Audio playback error:', e));
-      }
+      console.log('[CallManager] Remote media stream received.');
       
-      this._updateCallStatus('Call Connected', 'text-emerald-400');
+      const audioElem = document.getElementById('remoteAudio');
+      const videoElem = document.getElementById('remoteVideo');
+
+      // Detect if stream includes video (Screen Share) or audio
+      if (remoteStream.getVideoTracks().length > 0) {
+        if (videoElem) {
+          videoElem.srcObject = remoteStream;
+          videoElem.classList.remove('hidden');
+        }
+      } else {
+        if (audioElem) {
+          audioElem.srcObject = remoteStream;
+          audioElem.play().catch(e => console.error('Audio playback error:', e));
+        }
+      }
+
+      const callerName = call.metadata?.callerName || 'Peer';
+      this._updateCallStatus(`Connected with ${callerName}`, 'text-emerald-400');
       this._startTimer();
     });
 
     call.on('close', () => {
-      console.log('[CallManager] Call session ended by remote peer.');
       this.endCall();
     });
 
@@ -88,7 +104,51 @@ class CallManager {
     });
   }
 
-  // Active call timer
+  async toggleScreenShare() {
+    if (!this.activeCall) {
+      alert('You must be in an active call to share your screen.');
+      return;
+    }
+
+    try {
+      if (!this.isSharingScreen) {
+        // Request Screen Capture
+        this.screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+        const videoTrack = this.screenStream.getVideoTracks()[0];
+
+        // Replace audio/video track sent to peer
+        const sender = this.activeCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+        if (sender) {
+          sender.replaceTrack(videoTrack);
+        } else {
+          this.activeCall.peerConnection.addTrack(videoTrack, this.screenStream);
+        }
+
+        this.isSharingScreen = true;
+        this._updateCallStatus('Sharing Screen...', 'text-indigo-400');
+
+        // Handle user stopping screen share via browser bar
+        videoTrack.onended = () => {
+          this.toggleScreenShare();
+        };
+      } else {
+        // Stop Screen Share and revert to audio track
+        if (this.screenStream) {
+          this.screenStream.getTracks().forEach(track => track.stop());
+          this.screenStream = null;
+        }
+
+        this.isSharingScreen = false;
+        const videoElem = document.getElementById('remoteVideo');
+        if (videoElem) videoElem.classList.add('hidden');
+
+        this._updateCallStatus('Call Connected', 'text-emerald-400');
+      }
+    } catch (err) {
+      console.error('[Screen Share Error]', err);
+    }
+  }
+
   _startTimer() {
     this._stopTimer();
     this.callSeconds = 0;
@@ -117,7 +177,6 @@ class CallManager {
     }
   }
 
-  // UI status banner helper
   _updateCallStatus(message, textClass) {
     const statusElem = document.getElementById('call-status');
     if (statusElem) {
@@ -126,7 +185,6 @@ class CallManager {
     }
   }
 
-  // Toggle microphone mute
   toggleMute() {
     if (!this.localStream) return false;
     this.isMuted = !this.isMuted;
@@ -134,15 +192,10 @@ class CallManager {
       track.enabled = !this.isMuted;
     });
     
-    if (this.isMuted) {
-      this._updateCallStatus('Call Connected (Muted)', 'text-amber-400');
-    } else {
-      this._updateCallStatus('Call Connected', 'text-emerald-400');
-    }
+    this._updateCallStatus(this.isMuted ? 'Call Connected (Muted)' : 'Call Connected', 'text-amber-400');
     return this.isMuted;
   }
 
-  // Toggle call hold
   toggleHold() {
     if (!this.localStream) return false;
     this.isOnHold = !this.isOnHold;
@@ -150,17 +203,11 @@ class CallManager {
       track.enabled = !this.isOnHold;
     });
 
-    if (this.isOnHold) {
-      this._updateCallStatus('Call On Hold', 'text-amber-400');
-    } else {
-      this._updateCallStatus('Call Connected', 'text-emerald-400');
-    }
+    this._updateCallStatus(this.isOnHold ? 'Call On Hold' : 'Call Connected', 'text-amber-400');
     return this.isOnHold;
   }
 
-  // Terminate active call and clean up resources
   endCall() {
-    console.log('[CallManager] Cleaning up call state and media streams...');
     if (this.activeCall) {
       this.activeCall.close();
       this.activeCall = null;
@@ -169,14 +216,25 @@ class CallManager {
       this.localStream.getTracks().forEach(track => track.stop());
       this.localStream = null;
     }
+    if (this.screenStream) {
+      this.screenStream.getTracks().forEach(track => track.stop());
+      this.screenStream = null;
+    }
+
     this.isMuted = false;
     this.isOnHold = false;
+    this.isSharingScreen = false;
     this._stopTimer();
     this._updateCallStatus('Idle', 'text-slate-400');
 
+    const videoElem = document.getElementById('remoteVideo');
+    if (videoElem) videoElem.classList.add('hidden');
+
     const muteBtn = document.getElementById('btn-mute');
     const holdBtn = document.getElementById('btn-hold');
+    const screenBtn = document.getElementById('btn-screen');
     if (muteBtn) muteBtn.classList.remove('bg-amber-600');
     if (holdBtn) holdBtn.classList.remove('bg-amber-600');
+    if (screenBtn) screenBtn.classList.remove('bg-indigo-600');
   }
 }
