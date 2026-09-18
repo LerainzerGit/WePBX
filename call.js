@@ -1,100 +1,128 @@
 /**
  * WebRTC Call Manager
- * Controls media streams, peer connections, and call state.
+ * Controls media capture, active call state, stream rendering, timers, and UI indicators.
  */
 class CallManager {
   constructor(pbxEngine) {
     this.pbx = pbxEngine;
-    this.peerConnection = null;
+    this.activeCall = null;
     this.localStream = null;
-    this.remoteStream = null;
-    this.currentRemoteExt = null;
     this.isMuted = false;
     this.isOnHold = false;
-    
-    // Default public STUN servers for NAT traversal
-    this.iceConfig = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
-      ]
-    };
+    this.timerInterval = null;
+    this.callSeconds = 0;
   }
 
-  // Initialize a new peer connection
-  _initPeerConnection(remoteExt) {
-    this.peerConnection = new RTCPeerConnection(this.iceConfig);
-    this.currentRemoteExt = remoteExt;
+  // Start an outgoing call
+  async makeCall(targetExtension) {
+    const cleanTarget = targetExtension.toString().trim();
+    if (!cleanTarget) {
+      alert('Please enter a valid target extension.');
+      return;
+    }
 
-    // Send local ICE candidates to the remote peer
-    this.peerConnection.onicecandidate = (event) => {
-      if (event.candidate) {
-        this.pbx.sendSignal(remoteExt, {
-          type: 'candidate',
-          candidate: event.candidate
-        });
+    if (!this.pbx.peer || this.pbx.peer.disconnected) {
+      alert('PBX is offline. Please register your extension first.');
+      return;
+    }
+
+    try {
+      this._updateCallStatus(`Dialing Ext ${cleanTarget}...`, 'text-amber-400');
+      this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      
+      const targetPeerId = `pbx-ext-${cleanTarget}`;
+      this.activeCall = this.pbx.peer.call(targetPeerId, this.localStream);
+
+      if (!this.activeCall) {
+        throw new Error('Failed to create outbound media connection.');
       }
-    };
 
-    // Attach incoming audio stream to remote audio element
-    this.peerConnection.ontrack = (event) => {
-      this.remoteStream = event.streams[0];
+      this._setupCallEvents(this.activeCall);
+    } catch (err) {
+      console.error('[CallManager Error]', err);
+      alert(`Could not place call: ${err.message || 'Microphone permission denied.'}`);
+      this.endCall();
+    }
+  }
+
+  // Answer an incoming call
+  async answerCall(incomingCall) {
+    try {
+      this._updateCallStatus('Connecting call...', 'text-amber-400');
+      this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      
+      this.activeCall = incomingCall;
+      this.activeCall.answer(this.localStream);
+      
+      this._setupCallEvents(this.activeCall);
+    } catch (err) {
+      console.error('[CallManager Error]', err);
+      alert(`Failed to answer call: ${err.message || 'Microphone permission denied.'}`);
+      this.endCall();
+    }
+  }
+
+  // Bind WebRTC connection events
+  _setupCallEvents(call) {
+    call.on('stream', (remoteStream) => {
+      console.log('[CallManager] Remote audio stream received.');
       const audioElem = document.getElementById('remoteAudio');
       if (audioElem) {
-        audioElem.srcObject = this.remoteStream;
+        audioElem.srcObject = remoteStream;
+        audioElem.play().catch(e => console.error('Audio playback error:', e));
       }
-    };
-  }
-
-  // Start an outgoing call to another extension
-  async makeCall(targetExtension) {
-    this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-    this._initPeerConnection(targetExtension);
-
-    this.localStream.getTracks().forEach(track => {
-      this.peerConnection.addTrack(track, this.localStream);
+      
+      this._updateCallStatus('Call Connected', 'text-emerald-400');
+      this._startTimer();
     });
 
-    const offer = await this.peerConnection.createOffer();
-    await this.peerConnection.setLocalDescription(offer);
+    call.on('close', () => {
+      console.log('[CallManager] Call session ended by remote peer.');
+      this.endCall();
+    });
 
-    await this.pbx.sendSignal(targetExtension, {
-      type: 'offer',
-      offer: offer
+    call.on('error', (err) => {
+      console.error('[CallManager Session Error]', err);
+      alert(`Call Session Error: ${err.message || err}`);
+      this.endCall();
     });
   }
 
-  // Answer an incoming call request
-  async answerCall(fromExtension, offer) {
-    this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-    this._initPeerConnection(fromExtension);
+  // Active call timer
+  _startTimer() {
+    this._stopTimer();
+    this.callSeconds = 0;
+    const timerElem = document.getElementById('call-timer');
+    if (timerElem) timerElem.classList.remove('hidden');
 
-    this.localStream.getTracks().forEach(track => {
-      this.peerConnection.addTrack(track, this.localStream);
-    });
-
-    await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-    const answer = await this.peerConnection.createAnswer();
-    await this.peerConnection.setLocalDescription(answer);
-
-    await this.pbx.sendSignal(fromExtension, {
-      type: 'answer',
-      answer: answer
-    });
-  }
-
-  // Process incoming signaling messages
-  async handleSignal(signal) {
-    const { from, data } = signal;
-
-    if (data.type === 'offer') {
-      if (confirm(`Incoming call from Extension ${from}. Answer?`)) {
-        await this.answerCall(from, data.offer);
+    this.timerInterval = setInterval(() => {
+      this.callSeconds++;
+      const mins = String(Math.floor(this.callSeconds / 60)).padStart(2, '0');
+      const secs = String(this.callSeconds % 60).padStart(2, '0');
+      if (timerElem) {
+        timerElem.innerText = `${mins}:${secs}`;
       }
-    } else if (data.type === 'answer') {
-      await this.peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-    } else if (data.type === 'candidate' && this.peerConnection) {
-      await this.peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+    }, 1000);
+  }
+
+  _stopTimer() {
+    if (this.timerInterval) {
+      clearInterval(this.timerInterval);
+      this.timerInterval = null;
+    }
+    const timerElem = document.getElementById('call-timer');
+    if (timerElem) {
+      timerElem.innerText = '00:00';
+      timerElem.classList.add('hidden');
+    }
+  }
+
+  // UI status banner helper
+  _updateCallStatus(message, textClass) {
+    const statusElem = document.getElementById('call-status');
+    if (statusElem) {
+      statusElem.innerText = message;
+      statusElem.className = `text-sm font-semibold mb-2 ${textClass}`;
     }
   }
 
@@ -102,27 +130,40 @@ class CallManager {
   toggleMute() {
     if (!this.localStream) return false;
     this.isMuted = !this.isMuted;
-    this.localStream.getAudioTracks()[0].enabled = !this.isMuted;
+    this.localStream.getAudioTracks().forEach(track => {
+      track.enabled = !this.isMuted;
+    });
+    
+    if (this.isMuted) {
+      this._updateCallStatus('Call Connected (Muted)', 'text-amber-400');
+    } else {
+      this._updateCallStatus('Call Connected', 'text-emerald-400');
+    }
     return this.isMuted;
   }
 
   // Toggle call hold
   toggleHold() {
-    if (!this.peerConnection) return false;
+    if (!this.localStream) return false;
     this.isOnHold = !this.isOnHold;
-    this.peerConnection.getSenders().forEach(sender => {
-      if (sender.track) {
-        sender.track.enabled = !this.isOnHold;
-      }
+    this.localStream.getAudioTracks().forEach(track => {
+      track.enabled = !this.isOnHold;
     });
+
+    if (this.isOnHold) {
+      this._updateCallStatus('Call On Hold', 'text-amber-400');
+    } else {
+      this._updateCallStatus('Call Connected', 'text-emerald-400');
+    }
     return this.isOnHold;
   }
 
-  // Hang up active call
+  // Terminate active call and clean up resources
   endCall() {
-    if (this.peerConnection) {
-      this.peerConnection.close();
-      this.peerConnection = null;
+    console.log('[CallManager] Cleaning up call state and media streams...');
+    if (this.activeCall) {
+      this.activeCall.close();
+      this.activeCall = null;
     }
     if (this.localStream) {
       this.localStream.getTracks().forEach(track => track.stop());
@@ -130,5 +171,12 @@ class CallManager {
     }
     this.isMuted = false;
     this.isOnHold = false;
+    this._stopTimer();
+    this._updateCallStatus('Idle', 'text-slate-400');
+
+    const muteBtn = document.getElementById('btn-mute');
+    const holdBtn = document.getElementById('btn-hold');
+    if (muteBtn) muteBtn.classList.remove('bg-amber-600');
+    if (holdBtn) holdBtn.classList.remove('bg-amber-600');
   }
 }
