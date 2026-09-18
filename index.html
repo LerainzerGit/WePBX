@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>No-Database WebRTC PBX</title>
+  <title>Browser WebRTC PBX</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- PeerJS Library for serverless signaling -->
+  <!-- PeerJS Library -->
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <script src="pbx.js"></script>
   <script src="call.js"></script>
@@ -13,7 +13,7 @@
 <body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans">
 
   <header class="bg-slate-800 border-b border-slate-700 px-6 py-4 flex justify-between items-center">
-    <h1 class="font-bold text-xl tracking-wide text-emerald-400">Browser PBX (No Database)</h1>
+    <h1 class="font-bold text-xl tracking-wide text-emerald-400">Serverless Browser PBX</h1>
     <span id="status-badge" class="px-3 py-1 bg-red-900/50 text-red-400 border border-red-700 rounded-full text-xs">
       Offline
     </span>
@@ -21,36 +21,40 @@
 
   <main class="flex-1 p-6 grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto w-full">
 
-    <!-- Registration Panel -->
+    <!-- Step 1: Registration -->
     <section class="bg-slate-800 border border-slate-700 rounded-xl p-5 flex flex-col justify-center">
-      <h2 class="text-lg font-semibold mb-4 text-emerald-400">1. Set Your Extension</h2>
+      <h2 class="text-lg font-semibold mb-4 text-emerald-400">1. Extension Setup</h2>
       <div class="space-y-4">
         <div>
-          <label class="text-xs text-slate-400">Extension Number (e.g., 101, 102)</label>
+          <label class="text-xs text-slate-400">Extension Number</label>
           <input id="reg-ext" type="text" placeholder="101" class="w-full bg-slate-900 border border-slate-700 p-3 rounded text-slate-100 focus:outline-none mt-1"/>
         </div>
         <button onclick="registerExtension()" class="w-full bg-emerald-600 hover:bg-emerald-500 py-3 rounded font-bold transition">
-          Go Online
+          Register Online
         </button>
       </div>
     </section>
 
-    <!-- Dialer Panel -->
+    <!-- Step 2: Softphone Dialer -->
     <section class="bg-slate-800 border border-slate-700 rounded-xl p-5 flex flex-col items-center">
-      <h2 class="text-lg font-semibold mb-4 text-emerald-400">2. Dialer</h2>
+      <h2 class="text-lg font-semibold mb-2 text-emerald-400">2. Softphone</h2>
       
-      <input id="dial-display" type="text" placeholder="Extension to Call" 
+      <!-- Dynamic Visual Call Indicators -->
+      <div id="call-status" class="text-sm font-semibold mb-1 text-slate-400">Idle</div>
+      <div id="call-timer" class="text-2xl font-mono font-bold text-emerald-400 mb-3 hidden">00:00</div>
+
+      <input id="dial-display" type="text" placeholder="Dial Extension (e.g. 101)" 
              class="w-full bg-slate-900 border border-slate-700 text-center px-4 py-3 rounded-lg text-2xl text-emerald-400 mb-4 focus:outline-none"/>
 
       <!-- Controls -->
       <div class="flex space-x-2 w-full mb-3">
-        <button id="btn-call" onclick="makeCall()" class="flex-1 bg-emerald-600 hover:bg-emerald-500 py-3 rounded font-bold">Call</button>
-        <button id="btn-hangup" onclick="hangupCall()" class="flex-1 bg-rose-600 hover:bg-rose-500 py-3 rounded font-bold">Hangup</button>
+        <button id="btn-call" onclick="makeCall()" class="flex-1 bg-emerald-600 hover:bg-emerald-500 py-3 rounded font-bold transition">Call</button>
+        <button id="btn-hangup" onclick="hangupCall()" class="flex-1 bg-rose-600 hover:bg-rose-500 py-3 rounded font-bold transition">Hangup</button>
       </div>
 
       <div class="flex space-x-2 w-full">
-        <button id="btn-mute" onclick="toggleMute()" class="flex-1 bg-slate-700 hover:bg-slate-600 py-2 rounded text-sm">Mute</button>
-        <button id="btn-hold" onclick="toggleHold()" class="flex-1 bg-slate-700 hover:bg-slate-600 py-2 rounded text-sm">Hold</button>
+        <button id="btn-mute" onclick="toggleMute()" class="flex-1 bg-slate-700 hover:bg-slate-600 py-2 rounded text-sm transition">Mute</button>
+        <button id="btn-hold" onclick="toggleHold()" class="flex-1 bg-slate-700 hover:bg-slate-600 py-2 rounded text-sm transition">Hold</button>
       </div>
 
       <audio id="remoteAudio" autoplay></audio>
@@ -62,27 +66,29 @@
     const pbx = new BrowserPBX();
     const callMgr = new CallManager(pbx);
 
-    // Handle incoming calls
+    // Incoming call handler
     pbx.onIncomingCall((incomingCall) => {
       const callerExt = incomingCall.peer.replace('pbx-ext-', '');
-      if (confirm(`Incoming call from Extension ${callerExt}. Answer?`)) {
+      if (confirm(`Incoming call from Extension ${callerExt}. Accept?`)) {
         callMgr.answerCall(incomingCall);
+      } else {
+        incomingCall.close();
       }
     });
 
     function registerExtension() {
-      const ext = document.getElementById('reg-ext').value.trim();
-      if (!ext) return alert('Enter an extension number.');
+      const ext = document.getElementById('reg-ext').value;
+      if (!ext.trim()) return alert('Please enter an extension number.');
 
       pbx.register(ext, (id) => {
-        document.getElementById('status-badge').innerText = `Online: Ext ${ext}`;
-        document.getElementById('status-badge').className = "px-3 py-1 bg-emerald-900/50 text-emerald-400 border border-emerald-700 rounded-full text-xs";
+        const badge = document.getElementById('status-badge');
+        badge.innerText = `Online: Ext ${ext.trim()}`;
+        badge.className = "px-3 py-1 bg-emerald-900/50 text-emerald-400 border border-emerald-700 rounded-full text-xs";
       });
     }
 
     async function makeCall() {
-      const target = document.getElementById('dial-display').value.trim();
-      if (!target) return alert('Enter target extension.');
+      const target = document.getElementById('dial-display').value;
       await callMgr.makeCall(target);
     }
 
