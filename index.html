@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Browser WebRTC PBX</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- PeerJS Library -->
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <script src="pbx.js"></script>
   <script src="call.js"></script>
@@ -26,6 +25,10 @@
       <h2 class="text-lg font-semibold mb-4 text-emerald-400">1. Extension Setup</h2>
       <div class="space-y-4">
         <div>
+          <label class="text-xs text-slate-400">Display Name</label>
+          <input id="reg-name" type="text" placeholder="e.g. Alex" class="w-full bg-slate-900 border border-slate-700 p-3 rounded text-slate-100 focus:outline-none mt-1"/>
+        </div>
+        <div>
           <label class="text-xs text-slate-400">Extension Number</label>
           <input id="reg-ext" type="text" placeholder="101" class="w-full bg-slate-900 border border-slate-700 p-3 rounded text-slate-100 focus:outline-none mt-1"/>
         </div>
@@ -39,14 +42,16 @@
     <section class="bg-slate-800 border border-slate-700 rounded-xl p-5 flex flex-col items-center">
       <h2 class="text-lg font-semibold mb-2 text-emerald-400">2. Softphone</h2>
       
-      <!-- Dynamic Visual Call Indicators -->
       <div id="call-status" class="text-sm font-semibold mb-1 text-slate-400">Idle</div>
       <div id="call-timer" class="text-2xl font-mono font-bold text-emerald-400 mb-3 hidden">00:00</div>
+
+      <!-- Remote Video Container for Screen Sharing -->
+      <video id="remoteVideo" autoplay playsinline class="w-full max-h-48 bg-black rounded-lg mb-4 hidden border border-slate-700 object-contain"></video>
 
       <input id="dial-display" type="text" placeholder="Dial Extension (e.g. 101)" 
              class="w-full bg-slate-900 border border-slate-700 text-center px-4 py-3 rounded-lg text-2xl text-emerald-400 mb-4 focus:outline-none"/>
 
-      <!-- Controls -->
+      <!-- Call Controls -->
       <div class="flex space-x-2 w-full mb-3">
         <button id="btn-call" onclick="makeCall()" class="flex-1 bg-emerald-600 hover:bg-emerald-500 py-3 rounded font-bold transition">Call</button>
         <button id="btn-hangup" onclick="hangupCall()" class="flex-1 bg-rose-600 hover:bg-rose-500 py-3 rounded font-bold transition">Hangup</button>
@@ -55,6 +60,7 @@
       <div class="flex space-x-2 w-full">
         <button id="btn-mute" onclick="toggleMute()" class="flex-1 bg-slate-700 hover:bg-slate-600 py-2 rounded text-sm transition">Mute</button>
         <button id="btn-hold" onclick="toggleHold()" class="flex-1 bg-slate-700 hover:bg-slate-600 py-2 rounded text-sm transition">Hold</button>
+        <button id="btn-screen" onclick="toggleScreenShare()" class="flex-1 bg-slate-700 hover:bg-slate-600 py-2 rounded text-sm transition">Share Screen</button>
       </div>
 
       <audio id="remoteAudio" autoplay></audio>
@@ -66,10 +72,12 @@
     const pbx = new BrowserPBX();
     const callMgr = new CallManager(pbx);
 
-    // Incoming call handler
+    // Incoming call listener showing caller name
     pbx.onIncomingCall((incomingCall) => {
-      const callerExt = incomingCall.peer.replace('pbx-ext-', '');
-      if (confirm(`Incoming call from Extension ${callerExt}. Accept?`)) {
+      const callerName = incomingCall.metadata?.callerName || 'Unknown Caller';
+      const callerExt = incomingCall.metadata?.callerExt || incomingCall.peer.replace('pbx-ext-', '');
+
+      if (confirm(`Incoming call from ${callerName} (Ext ${callerExt}). Accept?`)) {
         callMgr.answerCall(incomingCall);
       } else {
         incomingCall.close();
@@ -77,12 +85,14 @@
     });
 
     function registerExtension() {
+      const name = document.getElementById('reg-name').value;
       const ext = document.getElementById('reg-ext').value;
+
       if (!ext.trim()) return alert('Please enter an extension number.');
 
-      pbx.register(ext, (id) => {
+      pbx.register(ext, name, (id) => {
         const badge = document.getElementById('status-badge');
-        badge.innerText = `Online: Ext ${ext.trim()}`;
+        badge.innerText = `Online: ${pbx.displayName} (Ext ${ext.trim()})`;
         badge.className = "px-3 py-1 bg-emerald-900/50 text-emerald-400 border border-emerald-700 rounded-full text-xs";
       });
     }
@@ -104,6 +114,11 @@
     function toggleHold() {
       const onHold = callMgr.toggleHold();
       document.getElementById('btn-hold').classList.toggle('bg-amber-600', onHold);
+    }
+
+    async function toggleScreenShare() {
+      await callMgr.toggleScreenShare();
+      document.getElementById('btn-screen').classList.toggle('bg-indigo-600', callMgr.isSharingScreen);
     }
   </script>
 </body>
