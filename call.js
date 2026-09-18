@@ -1,5 +1,5 @@
 /**
- * WebRTC Call Manager
+ * WebRTC Call Manager with Screen Sharing Support
  */
 class CallManager {
   constructor(pbxEngine) {
@@ -28,13 +28,9 @@ class CallManager {
 
     try {
       this._updateCallStatus(`Dialing Ext ${cleanTarget}...`, 'text-amber-400');
-      
-      // Capture local microphone stream
       this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
 
       const targetPeerId = `pbx-ext-${cleanTarget}`;
-      
-      // Pass caller identity safely serialized in metadata
       const metadata = {
         callerName: this.pbx.displayName,
         callerExt: this.pbx.currentExtension
@@ -58,12 +54,11 @@ class CallManager {
     try {
       const callerName = incomingCall.metadata?.callerName || 'Unknown Caller';
       this._updateCallStatus(`Connecting to ${callerName}...`, 'text-amber-400');
-      
+
       this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      
       this.activeCall = incomingCall;
       this.activeCall.answer(this.localStream);
-      
+
       this._setupCallEvents(this.activeCall);
     } catch (err) {
       console.error('[CallManager Error]', err);
@@ -74,19 +69,21 @@ class CallManager {
 
   _setupCallEvents(call) {
     call.on('stream', (remoteStream) => {
-      console.log('[CallManager] Remote stream attached.');
-      
+      console.log('[CallManager] Remote stream received:', remoteStream.getTracks());
+
       const audioElem = document.getElementById('remoteAudio');
       const videoElem = document.getElementById('remoteVideo');
 
-      // Check if remote stream contains video (Screen Share)
+      // Check for video tracks in the stream
       const hasVideo = remoteStream.getVideoTracks().length > 0;
 
       if (hasVideo && videoElem) {
         videoElem.srcObject = remoteStream;
         videoElem.classList.remove('hidden');
         videoElem.play().catch(e => console.error('Video playback error:', e));
-      } else if (audioElem) {
+      }
+
+      if (audioElem && remoteStream.getAudioTracks().length > 0) {
         audioElem.srcObject = remoteStream;
         audioElem.play().catch(e => console.error('Audio playback error:', e));
       }
@@ -97,13 +94,11 @@ class CallManager {
     });
 
     call.on('close', () => {
-      console.log('[CallManager] Call ended by peer.');
       this.endCall();
     });
 
     call.on('error', (err) => {
       console.error('[CallManager Call Error]', err);
-      alert(`Call Error: ${err.message || err}`);
       this.endCall();
     });
   }
@@ -116,44 +111,62 @@ class CallManager {
 
     try {
       if (!this.isSharingScreen) {
-        // Request display capture
-        this.screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-        const videoTrack = this.screenStream.getVideoTracks()[0];
+        // Capture display stream
+        this.screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: { cursor: 'always' },
+          audio: false
+        });
 
-        // Locate video sender or add new track to connection
-        const peerConn = this.activeCall.peerConnection;
-        if (peerConn) {
-          const sender = peerConn.getSenders().find(s => s.track && s.track.kind === 'video');
-          if (sender) {
-            sender.replaceTrack(videoTrack);
+        const screenVideoTrack = this.screenStream.getVideoTracks()[0];
+        const peerConnection = this.activeCall.peerConnection;
+
+        if (peerConnection) {
+          // Replace or add video track to WebRTC sender
+          const senders = peerConnection.getSenders();
+          const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+
+          if (videoSender) {
+            await videoSender.replaceTrack(screenVideoTrack);
           } else {
-            peerConn.addTrack(videoTrack, this.screenStream);
+            peerConnection.addTrack(screenVideoTrack, this.screenStream);
           }
         }
 
         this.isSharingScreen = true;
         this._updateCallStatus('Sharing Screen...', 'text-indigo-400');
 
-        // Handle native browser "Stop Sharing" button
-        videoTrack.onended = () => {
-          this.toggleScreenShare();
+        // Automatically revert when the user clicks browser "Stop sharing" bar
+        screenVideoTrack.onended = () => {
+          this.stopScreenShare();
         };
       } else {
-        // Stop screen tracks
-        if (this.screenStream) {
-          this.screenStream.getTracks().forEach(track => track.stop());
-          this.screenStream = null;
-        }
-
-        this.isSharingScreen = false;
-        const videoElem = document.getElementById('remoteVideo');
-        if (videoElem) videoElem.classList.add('hidden');
-
-        this._updateCallStatus('Call Connected', 'text-emerald-400');
+        this.stopScreenShare();
       }
     } catch (err) {
       console.error('[Screen Share Error]', err);
     }
+  }
+
+  async stopScreenShare() {
+    if (this.screenStream) {
+      this.screenStream.getTracks().forEach(track => track.stop());
+      this.screenStream = null;
+    }
+
+    const peerConnection = this.activeCall?.peerConnection;
+    if (peerConnection) {
+      const senders = peerConnection.getSenders();
+      const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+      if (videoSender) {
+        peerConnection.removeTrack(videoSender);
+      }
+    }
+
+    this.isSharingScreen = false;
+    this._updateCallStatus('Call Connected', 'text-emerald-400');
+
+    const screenBtn = document.getElementById('btn-screen');
+    if (screenBtn) screenBtn.classList.remove('bg-indigo-600');
   }
 
   _startTimer() {
@@ -198,7 +211,7 @@ class CallManager {
     this.localStream.getAudioTracks().forEach(track => {
       track.enabled = !this.isMuted;
     });
-    
+
     this._updateCallStatus(this.isMuted ? 'Call Connected (Muted)' : 'Call Connected', 'text-amber-400');
     return this.isMuted;
   }
@@ -235,7 +248,10 @@ class CallManager {
     this._updateCallStatus('Idle', 'text-slate-400');
 
     const videoElem = document.getElementById('remoteVideo');
-    if (videoElem) videoElem.classList.add('hidden');
+    if (videoElem) {
+      videoElem.srcObject = null;
+      videoElem.classList.add('hidden');
+    }
 
     const muteBtn = document.getElementById('btn-mute');
     const holdBtn = document.getElementById('btn-hold');
